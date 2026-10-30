@@ -186,7 +186,13 @@ def run_task(
     state.status = "success" if success else "failed"
 
 
-def render(tasks: list[TaskState], successes: list[TaskState], done_count: int, total: int) -> Table:
+def render(
+    tasks: list[TaskState],
+    successes: list[TaskState],
+    failures: list[TaskState],
+    done_count: int,
+    total: int,
+) -> Table:
     table = Table.grid(expand=True)
 
     header = Text(f"Running {done_count}/{total} done", style="bold")
@@ -203,6 +209,10 @@ def render(tasks: list[TaskState], successes: list[TaskState], done_count: int, 
         succ_lines = "\n".join(f"[green]\u2713[/green] {s.word}" for s in successes)
         table.add_row(Panel(succ_lines, title="Successful", border_style="green"))
 
+    if failures:
+        fail_lines = "\n".join(f"[red]\u2717[/red] {f.word} ({f.status})" for f in failures)
+        table.add_row(Panel(fail_lines, title="Failed", border_style="red"))
+
     return table
 
 
@@ -214,6 +224,7 @@ def main() -> None:
 
     console = Console()
     successes: list[TaskState] = []
+    failures: list[TaskState] = []
     completed = 0
     completed_lock = threading.Lock()
 
@@ -224,6 +235,8 @@ def main() -> None:
             completed += 1
             if state.status == "success":
                 successes.append(state)
+            else:
+                failures.append(state)
 
     with Live(console=console, refresh_per_second=10, transient=False) as live:
         with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
@@ -233,13 +246,17 @@ def main() -> None:
                 with completed_lock:
                     done = completed
                     succ_snapshot = list(successes)
-                live.update(render(tasks, succ_snapshot, done, len(tasks)))
+                    fail_snapshot = list(failures)
+                live.update(render(tasks, succ_snapshot, fail_snapshot, done, len(tasks)))
                 time.sleep(0.1)
 
-            live.update(render(tasks, successes, completed, len(tasks)))
+            live.update(render(tasks, successes, failures, completed, len(tasks)))
 
     console.print()
-    console.print(f"[bold]Summary: {len(successes)}/{len(tasks)} succeeded[/bold]")
+    console.print(
+        f"[bold]Summary: {len(successes)}/{len(tasks)} succeeded, "
+        f"{len(failures)}/{len(tasks)} failed[/bold]"
+    )
     if successes:
         console.print("\n[bold green]Successful:[/bold green]")
         for s in successes:
@@ -247,6 +264,12 @@ def main() -> None:
             console.print(f"  - {s.word}   ({cmd_str})")
     else:
         console.print("[yellow]No successful commands.[/yellow]")
+
+    if failures:
+        console.print("\n[bold red]Failed:[/bold red]")
+        for f in failures:
+            cmd_str = " ".join(shlex.quote(a) for a in f.argv)
+            console.print(f"  - {f.word}   ({f.status}, {cmd_str})")
 
 
 if __name__ == "__main__":

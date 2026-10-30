@@ -10,11 +10,11 @@ are kept visible and summarized at the end.
 - Substitutes `[[ENUM]]` in a command template with each line from a wordlist
 - Runs commands in parallel (configurable concurrency)
 - Streams live output per command, showing only the last N lines
-- Failed commands are cleared from the display without a trace
-- Successful commands stay visible in a running "Successful" panel
+- Successful commands move into a persistent green "Successful" panel
+- Failed commands move into a persistent red "Failed" panel (output stays visible, nothing is cleared)
 - Configurable success criteria (exit code only, or exit code + empty stderr)
 - Optional per-command timeout
-- Final summary listing every successful word and the exact command run
+- Final summary listing every successful and failed word with the exact command run
 
 ## Requirements
 
@@ -62,18 +62,22 @@ While running, you'll see a live panel per in-flight command with its latest
 output. As each command finishes:
 
 - **Success** → moves into a green "Successful" panel that stays visible.
-- **Failure** (non-zero exit, error, or timeout) → its panel disappears.
+- **Failure** (non-zero exit, error, or timeout) → moves into a red "Failed"
+  panel that also stays visible. Nothing is cleared from the display.
 
 At the end, a summary is printed:
 
 ```
-Summary: 4/5 succeeded
+Summary: 4/5 succeeded, 1/5 failed
 
 Successful:
   - 127.0.0.1   (ping -c 1 -W 1 127.0.0.1)
   - localhost   (ping -c 1 -W 1 localhost)
   - 8.8.8.8   (ping -c 1 -W 1 8.8.8.8)
   - example.com   (ping -c 1 -W 1 example.com)
+
+Failed:
+  - this-host-does-not-exist.invalid   (failed, ping -c 1 -W 1 this-host-does-not-exist.invalid)
 ```
 
 ## Wordlist format
