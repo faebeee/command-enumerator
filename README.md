@@ -93,9 +93,10 @@ example.com
 
 ## Notes
 
-- `[[ENUM]]` must appear as its own token in `--command` (after shell-like
-  tokenization). For example `"ping [[ENUM]]"` works, but `"ping[[ENUM]]"`
-  (no space) will not be substituted since it won't match as a standalone token.
+- `[[ENUM]]` can appear standalone or embedded within a larger argument after
+  shell-like tokenization. For example `"ping [[ENUM]]"`, `"ping[[ENUM]]"`,
+  and `"[[ENUM]]:foobar"` are all valid, and multiple occurrences within the
+  same argument are all substituted.
 - Commands are executed directly via `subprocess` (argv list), not through a
   shell, so shell operators like `|`, `&&`, or `>` in `--command` will not work
   as shell syntax — they'd be passed as literal arguments.

@@ -3,7 +3,10 @@
 command-enumerator
 
 Run a command template against every word in a wordlist, substituting the
-literal token [[ENUM]] with each word. Commands run in parallel (configurable
+literal token [[ENUM]] with each word. The token may appear standalone or
+embedded within a larger argument (e.g. "[[ENUM]]:foobar"), and multiple
+occurrences within the same argument are all replaced. Commands run in
+parallel (configurable
 concurrency), their live output streams to the terminal, and when a command
 finishes:
   - if it succeeded, it's promoted to a persistent "successful" list
@@ -154,10 +157,10 @@ def build_argv(command_template: str, word: str) -> list[str]:
     except ValueError as exc:
         print(f"error: could not parse --command: {exc}", file=sys.stderr)
         sys.exit(1)
-    if ENUM_TOKEN not in tokens:
+    if not any(ENUM_TOKEN in tok for tok in tokens):
         print(f"error: --command must contain the {ENUM_TOKEN} placeholder", file=sys.stderr)
         sys.exit(1)
-    return [word if tok == ENUM_TOKEN else tok for tok in tokens]
+    return [tok.replace(ENUM_TOKEN, word) for tok in tokens]
 
 
 def run_task(
