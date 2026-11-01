@@ -6,11 +6,13 @@ Run a command template against every word in a wordlist, substituting the
 literal token [[ENUM]] with each word. The token may appear standalone or
 embedded within a larger argument (e.g. "[[ENUM]]:foobar"), and multiple
 occurrences within the same argument are all replaced. Commands run in
-parallel (configurable
-concurrency), their live output streams to the terminal, and when a command
-finishes:
+parallel (configurable concurrency), their live output streams to the
+terminal, and when a command finishes:
   - if it succeeded, it's promoted to a persistent "successful" list
   - if it failed, its live panel is cleared without a trace
+
+With --stop-on-success, the enumerator stops launching new commands and
+kills any still-running commands as soon as the first success is found.
 
 At the end, a summary of all successful words/commands is printed.
 """
@@ -43,9 +45,10 @@ class TaskState:
     word: str
     argv: list[str]
     lines: deque = field(default_factory=lambda: deque())
-    status: str = "running"  # running | success | failed | timeout
+    status: str = "running"  # running | success | failed | timeout | skipped | aborted
     returncode: Optional[int] = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    proc: Optional[subprocess.Popen] = None
 
     def append_line(self, line: str, tail_lines: int) -> None:
         with self.lock:
@@ -129,8 +132,16 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help=(
-            "Minimum delay in seconds between successive command launches, to avoid "
-            "overwhelming the target command/system (default: 0, no delay)"
+            "Minimum delay in milliseconds between successive command launches, to "
+            "avoid overwhelming the target command/system (default: 0, no delay)"
+        ),
+    )
+    parser.add_argument(
+        "--stop-on-success",
+        action="store_true",
+        help=(
+            "Stop immediately once the first command succeeds: no new commands are "
+            "launched, and any currently running commands are killed"
         ),
     )
     return parser.parse_args()
@@ -168,7 +179,12 @@ def run_task(
     timeout: Optional[float],
     success_mode: str,
     tail_lines: int,
+    stop_event: threading.Event,
 ) -> None:
+    if stop_event.is_set():
+        state.status = "skipped"
+        return
+
     stderr_buf: list[str] = []
     proc = None
     try:
@@ -187,6 +203,13 @@ def run_task(
         state.append_line(f"error: {exc}", tail_lines)
         state.status = "failed"
         return
+
+    with state.lock:
+        state.proc = proc
+
+    if stop_event.is_set():
+        # A success was reported for another task right as this one started.
+        proc.kill()
 
     def pump(stream, collect_stderr: bool) -> None:
         for line in iter(stream.readline, ""):
@@ -207,15 +230,25 @@ def run_task(
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+        with state.lock:
+            state.proc = None
         state.status = "timeout"
         state.returncode = None
         t_out.join(timeout=1)
         t_err.join(timeout=1)
         return
 
+    with state.lock:
+        state.proc = None
+
     t_out.join(timeout=2)
     t_err.join(timeout=2)
     state.returncode = proc.returncode
+
+    if stop_event.is_set() and state.returncode != 0:
+        # We were killed because another task already succeeded.
+        state.status = "aborted"
+        return
 
     if success_mode == "exit-code":
         success = proc.returncode == 0
@@ -229,6 +262,7 @@ def render(
     tasks: list[TaskState],
     successes: list[TaskState],
     failures: list[TaskState],
+    skipped: list[TaskState],
     done_count: int,
     total: int,
 ) -> Table:
@@ -252,6 +286,10 @@ def render(
         fail_lines = "\n".join(f"[red]\u2717[/red] {f.word} ({f.status})" for f in failures)
         table.add_row(Panel(fail_lines, title="Failed", border_style="red"))
 
+    if skipped:
+        skip_lines = "\n".join(f"[dim]\u2014[/dim] {s.word} ({s.status})" for s in skipped)
+        table.add_row(Panel(skip_lines, title="Skipped/Aborted", border_style="dim"))
+
     return table
 
 
@@ -264,18 +302,37 @@ def main() -> None:
     console = Console()
     successes: list[TaskState] = []
     failures: list[TaskState] = []
+    skipped: list[TaskState] = []
     completed = 0
     completed_lock = threading.Lock()
     throttle = Throttle(args.delay)
+    stop_event = threading.Event()
 
     def worker(state: TaskState) -> None:
         nonlocal completed
+        if args.stop_on_success and stop_event.is_set():
+            state.status = "skipped"
+            with completed_lock:
+                completed += 1
+                skipped.append(state)
+            return
         throttle.wait()
-        run_task(state, args.timeout, args.success_mode, args.tail_lines)
+        run_task(state, args.timeout, args.success_mode, args.tail_lines, stop_event)
         with completed_lock:
             completed += 1
             if state.status == "success":
                 successes.append(state)
+                if args.stop_on_success:
+                    stop_event.set()
+                    for other in tasks:
+                        if other is state:
+                            continue
+                        with other.lock:
+                            proc = other.proc
+                        if proc is not None and proc.poll() is None:
+                            proc.kill()
+            elif state.status in ("skipped", "aborted"):
+                skipped.append(state)
             else:
                 failures.append(state)
 
@@ -288,16 +345,21 @@ def main() -> None:
                     done = completed
                     succ_snapshot = list(successes)
                     fail_snapshot = list(failures)
-                live.update(render(tasks, succ_snapshot, fail_snapshot, done, len(tasks)))
+                    skip_snapshot = list(skipped)
+                live.update(render(tasks, succ_snapshot, fail_snapshot, skip_snapshot, done, len(tasks)))
                 time.sleep(0.1)
 
-            live.update(render(tasks, successes, failures, completed, len(tasks)))
+            live.update(render(tasks, successes, failures, skipped, completed, len(tasks)))
 
     console.print()
-    console.print(
+    summary = (
         f"[bold]Summary: {len(successes)}/{len(tasks)} succeeded, "
-        f"{len(failures)}/{len(tasks)} failed[/bold]"
+        f"{len(failures)}/{len(tasks)} failed"
     )
+    if skipped:
+        summary += f", {len(skipped)}/{len(tasks)} skipped/aborted"
+    summary += "[/bold]"
+    console.print(summary)
     if successes:
         console.print("\n[bold green]Successful:[/bold green]")
         for s in successes:
@@ -311,6 +373,12 @@ def main() -> None:
         for f in failures:
             cmd_str = " ".join(shlex.quote(a) for a in f.argv)
             console.print(f"  - {f.word}   ({f.status}, {cmd_str})")
+
+    if skipped:
+        console.print("\n[dim]Skipped/Aborted (stopped after first success):[/dim]")
+        for s in skipped:
+            cmd_str = " ".join(shlex.quote(a) for a in s.argv)
+            console.print(f"  - {s.word}   ({s.status}, {cmd_str})")
 
 
 if __name__ == "__main__":
