@@ -45,7 +45,7 @@ python enumerator.py --command "ping [[ENUM]]" --wordlist ./src/wordlist.txt
 | `--success-mode`  | no       | `exit-code`  | `exit-code`: success if the process exits with code `0`. `exit-and-stderr`: success if exit code is `0` **and** stderr was empty. |
 | `--timeout`       | no       | none         | Per-command timeout in seconds. A command that times out is killed and counted as a failure. |
 | `--tail-lines`    | no       | `10`         | Number of trailing output lines shown per live command panel. |
-| `--delay`         | no       | `0`          | Minimum delay in seconds between successive command launches. |
+| `--delay`         | no       | `0`          | Minimum delay in milliseconds between successive command launches. |
 | `--stop-on-success` | no     | off          | Stop immediately once the first command succeeds: no new commands are launched, and any currently running commands are killed. |
 
 ### Example

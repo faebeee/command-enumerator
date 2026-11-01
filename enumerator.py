@@ -305,7 +305,7 @@ def main() -> None:
     skipped: list[TaskState] = []
     completed = 0
     completed_lock = threading.Lock()
-    throttle = Throttle(args.delay)
+    throttle = Throttle(args.delay / 1000.0)
     stop_event = threading.Event()
 
     def worker(state: TaskState) -> None:
