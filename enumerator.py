@@ -51,6 +51,33 @@ class TaskState:
                 self.lines.popleft()
 
 
+class Throttle:
+    """Rate-limits command launches across all worker threads.
+
+    Guarantees that successive launches are spaced at least `delay` seconds
+    apart, regardless of how many threads are running concurrently. This
+    prevents the enumerator from hammering the target command/system even
+    when --concurrency is high.
+    """
+
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+        self.lock = threading.Lock()
+        self.last: Optional[float] = None
+
+    def wait(self) -> None:
+        if self.delay <= 0:
+            return
+        with self.lock:
+            now = time.monotonic()
+            if self.last is not None:
+                elapsed = now - self.last
+                remaining = self.delay - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
+            self.last = time.monotonic()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="command-enumerator",
@@ -93,6 +120,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=10,
         help="Number of trailing output lines to show per live command panel (default: 10)",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum delay in seconds between successive command launches, to avoid "
+            "overwhelming the target command/system (default: 0, no delay)"
+        ),
     )
     return parser.parse_args()
 
@@ -227,9 +263,11 @@ def main() -> None:
     failures: list[TaskState] = []
     completed = 0
     completed_lock = threading.Lock()
+    throttle = Throttle(args.delay)
 
     def worker(state: TaskState) -> None:
         nonlocal completed
+        throttle.wait()
         run_task(state, args.timeout, args.success_mode, args.tail_lines)
         with completed_lock:
             completed += 1
